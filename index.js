@@ -66,9 +66,9 @@ async function handleGenerate(recordId, res) {
     if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video and thumbnail from Apify');
       const apifyData = {
-        urls: [tiktokLink]
+        inputUrl: tiktokLink
       };
-      const apifyUrl = `https://api.apify.com/v2/acts/dz_omar~tiktok-video-downloader/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
+      const apifyUrl = `https://api.apify.com/v2/acts/pocesar~download-tiktok-video/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
       const apifyRes = await fetch(apifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,8 +80,8 @@ async function handleGenerate(recordId, res) {
       }
       const apifyJson = await apifyRes.json();
       console.log('Apify response:', JSON.stringify(apifyJson));
-      sourceVideoUrl = apifyJson[0]?.video_download_url_no_watermark || apifyJson[0]?.video_download_url || apifyJson[0]?.playAddr;
-      coverImageUrl = apifyJson[0]?.thumbnail_url || apifyJson[0]?.cover || apifyJson[0]?.originCover;
+      sourceVideoUrl = apifyJson[0]?.url || apifyJson[0]?.videoUrlNoWatermark;
+      coverImageUrl = apifyJson[0]?.coverUrl || apifyJson[0]?.thumbnailUrl;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
