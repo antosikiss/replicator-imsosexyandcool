@@ -81,13 +81,16 @@ async function handleGenerate(recordId, res) {
       console.log('Apify response:', JSON.stringify(apifyJson));
       if (apifyJson.length === 0) throw new Error('Empty Apify response');
       const post = apifyJson[0];
-      sourceVideoUrl = post.playAddr || post.downloadAddr || post.webVideoUrl;
-      coverImageUrl = post.cover || post.originCover || post.dynamicCover;
+      sourceVideoUrl = post.playAddr || post.videoMeta?.playAddr || post.downloadAddr || post.webVideoUrl || post.videoUrl;
+      coverImageUrl = post.cover || post.videoMeta?.cover || post.originCover || post.dynamicCover;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
-    if (!aiCharacterUrl) throw new Error('Missing AI Character image');
+
+    // Use AI Character if available, fallback to coverImageUrl for face swap
+    const faceImageUrl = aiCharacterUrl || coverImageUrl;
+    if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
     // Update Source Video and Cover Image
     await base(MAIN_TABLE_NAME).update(recordId, {
@@ -100,7 +103,7 @@ async function handleGenerate(recordId, res) {
     const seedreamUuid = 'bytedance/seedream-v4.5/edit';
     const seedreamUrl = `https://api.wavespeed.ai/api/v3/${seedreamUuid}`;
     const seedreamData = {
-      images: [aiCharacterUrl],
+      images: [faceImageUrl],
       prompt: 'high quality portrait, detailed face, realistic skin, sharp eyes',
       width: 1728,
       height: 2304,
@@ -157,7 +160,6 @@ async function handleGenerate(recordId, res) {
     try {
       await base(MAIN_TABLE_NAME).update(recordId, {
         Status: 'Failed',
-        'Error Message': error.message || 'Unknown error',
         Generate: false
       });
     } catch (updateError) {
