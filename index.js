@@ -19,12 +19,14 @@ async function handleGenerate(recordId, res) {
   if (!recordId) return res.status(400).send('Missing recordId');
 
   const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
-  const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'app3cHH00xp68kQQR';
-  const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;
-  const MAIN_TABLE_NAME = 'Grid view';  // Replace with exact main table name if not 'Grid view'
+  const AIRTABLE_BASE_ID = 'app3cHH00xp68kQQR';  // From your config
+  const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;  // From config
+  const APIFY_API_KEY = process.env.APIFY_API_KEY;  // For video download
+  const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY;  // Optional, if using FAL.ai alternative
+  const MAIN_TABLE_NAME = 'Grid view';  // Exact from your table
   const CONFIG_TABLE_NAME = 'Configuration';
 
-  if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !WAVESPEED_API_KEY) return res.status(500).send('Missing env vars');
+  if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing env vars');
 
   const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
@@ -39,11 +41,28 @@ async function handleGenerate(recordId, res) {
     const fields = record.fields;
     if (!fields.Generate) return res.status(200).send('Generate not triggered');
 
-    const prompt = fields.Link;  // Use 'Link' as prompt (adapt if not)
-    const sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
-    if (!sourceVideoUrl) throw new Error('Missing Source Video');
-
+    // Set status to Generating immediately
     await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Generating' });
+
+    let sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
+    const tiktokLink = fields.Link;
+
+    // If no Source Video but Link is TikTok URL, download via Apify
+    if (!sourceVideoUrl && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
+      const apifyData = {
+        urls: [tiktokLink],
+        format: 'mp4'
+      };
+      const apifyRes = await fetch('https://api.apify.com/v2/acts/apify/tiktok-scraper/runs?token=' + APIFY_API_KEY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(apifyData)
+      });
+      const apifyJson = await apifyRes.json();
+      // Poll for Apify result (simplified; add full polling if needed)
+      sourceVideoUrl = apifyJson.data.items[0].videoUrl;  // Adapt to actual response
+    }
+    if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
     // Generate images (Seedream 4.5)
     const numImages = parseInt(config['# num_images']) || 1;
@@ -51,7 +70,7 @@ async function handleGenerate(recordId, res) {
     const imageOutputs = [];
     for (let i = 0; i < numImages; i++) {
       const imageData = {
-        prompt,
+        prompt: fields.Link,  // Use Link as prompt (adapt if needed)
         size: imageSize,
         enable_sync_mode: false
       };
@@ -78,14 +97,14 @@ async function handleGenerate(recordId, res) {
       imageOutputs.push(output);
     }
 
-    // Generate video (WAN 2.2 Animate, use first image as character)
+    // Generate video (WAN 2.2 Animate)
     const characterImageUrl = imageOutputs[0];
     const videoResolution = config['Video Resolution'] ? config['Video Resolution'].toLowerCase() : '720p';
     const videoData = {
       image: characterImageUrl,
       video: sourceVideoUrl,
       mode: 'replace',
-      prompt,
+      prompt: fields.Link,
       resolution: videoResolution
     };
     const videoSubmitRes = await fetch('https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/animate', {
