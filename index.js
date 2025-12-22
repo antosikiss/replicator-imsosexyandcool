@@ -66,9 +66,9 @@ async function handleGenerate(recordId, res) {
     if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video and thumbnail from Apify');
       const apifyData = {
-        inputUrl: tiktokLink
+        urls: [tiktokLink]
       };
-      const apifyUrl = `https://api.apify.com/v2/acts/pocesar~download-tiktok-video/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
+      const apifyUrl = `https://api.apify.com/v2/acts/S5h7zRLfKFEr8pdj7/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
       const apifyRes = await fetch(apifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,8 +80,8 @@ async function handleGenerate(recordId, res) {
       }
       const apifyJson = await apifyRes.json();
       console.log('Apify response:', JSON.stringify(apifyJson));
-      sourceVideoUrl = apifyJson[0]?.url || apifyJson[0]?.videoUrlNoWatermark;
-      coverImageUrl = apifyJson[0]?.coverUrl || apifyJson[0]?.thumbnailUrl;
+      sourceVideoUrl = apifyJson[0]?.video_download_url_no_watermark || apifyJson[0]?.videoUrl;
+      coverImageUrl = apifyJson[0]?.thumbnail_url || apifyJson[0]?.coverUrl;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
@@ -119,25 +119,25 @@ async function handleGenerate(recordId, res) {
     // Update Generated Images
     await base(MAIN_TABLE_NAME).update(recordId, { 'Generated Images': generatedImages });
 
-    // Face swap video with Wan Animate on fal.ai
-    console.log('Performing face swap with Wan Animate');
-    const wanAnimateUrl = 'https://fal.ai/models/fal-ai/wan/v2.2-14b/animate/move';
-    const wanData = {
+    // Face swap video with Wavespeed
+    console.log('Performing face swap with Wavespeed');
+    const wavespeedUrl = 'https://api.wavespeed.ai/api/v3/video-face-swap';
+    const wavespeedData = {
       video_url: sourceVideoUrl,
-      image_url: generatedImages.length > 0 ? generatedImages[0].url : aiCharacterUrl,  // Use generated or fallback
+      face_image_url: generatedImages.length > 0 ? generatedImages[0].url : aiCharacterUrl,
       resolution: '720p'
     };
-    const wanRes = await fetch(wanAnimateUrl, {
+    const wavespeedRes = await fetch(wavespeedUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Key ${FAL_AI_API_KEY}`
+        'Authorization': `Bearer ${WAVESPEED_API_KEY}`
       },
-      body: JSON.stringify(wanData)
+      body: JSON.stringify(wavespeedData)
     });
-    if (!wanRes.ok) throw new Error(`Wan Animate error: ${wanRes.statusText}`);
-    const wanJson = await wanRes.json();
-    const outputVideoUrl = wanJson.video_url;  // Adjust based on actual response
+    if (!wavespeedRes.ok) throw new Error(`Wavespeed error: ${wavespeedRes.statusText}`);
+    const wavespeedJson = await wavespeedRes.json();
+    const outputVideoUrl = wavespeedJson.output_video_url;
 
     // Success update
     await base(MAIN_TABLE_NAME).update(recordId, {
@@ -152,6 +152,7 @@ async function handleGenerate(recordId, res) {
     try {
       await base(MAIN_TABLE_NAME).update(recordId, {
         Status: 'Failed',
+        'Error Message': error.message || 'Unknown error',
         Generate: false
       });
     } catch (updateError) {
