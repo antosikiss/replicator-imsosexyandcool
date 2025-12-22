@@ -88,15 +88,15 @@ async function handleGenerate(recordId, res) {
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Fallback to coverImageUrl if aiCharacterUrl is missing
-    const faceImageUrl = aiCharacterUrl || coverImageUrl;
-    if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
-
     // Update Source Video and Cover Image
     await base(MAIN_TABLE_NAME).update(recordId, {
       'Source Video': [{ url: sourceVideoUrl }],
       'Cover Image': coverImageUrl ? [{ url: coverImageUrl }] : []
     });
+
+    // Fallback to coverImageUrl if aiCharacterUrl is missing
+    const faceImageUrl = aiCharacterUrl || coverImageUrl;
+    if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
     // Generate faces with Seedream v4.5 on Wavespeed
     console.log('Generating images with Seedream v4.5 on Wavespeed');
