@@ -88,7 +88,7 @@ async function handleGenerate(recordId, res) {
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Use AI Character if available, fallback to coverImageUrl for face swap
+    // Fallback to coverImageUrl if aiCharacterUrl is missing
     const faceImageUrl = aiCharacterUrl || coverImageUrl;
     if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
