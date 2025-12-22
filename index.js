@@ -4,7 +4,7 @@ const Airtable = require('airtable');
 const app = express();
 app.use(express.json());
 
-// Global handlers to log and prevent crashes
+// Global handlers
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection:', reason ? reason.stack || reason : 'No reason');
 });
@@ -39,10 +39,10 @@ async function handleGenerate(recordId, res) {
   if (!recordId) return res.status(400).send('Missing recordId');
 
   const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
-  const AIRTABLE_BASE_ID = 'app5JstpSmtghcbMA';  // Updated to match your base ID
+  const AIRTABLE_BASE_ID = 'app5JstpSmtghcbMA';
   const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;
   const APIFY_API_KEY = process.env.APIFY_API_KEY;
-  const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY; // Optional
+  const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY;
   const MAIN_TABLE_NAME = 'Generation';
 
   if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing required env vars');
@@ -61,12 +61,16 @@ async function handleGenerate(recordId, res) {
     let sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
     const tiktokLink = fields.Link;
 
+    console.log('APIFY_API_KEY exists:', !!APIFY_API_KEY);  // Debug to confirm key
+
     if (!sourceVideoUrl && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video from Apify');
       const apifyData = {
-        urls: [tiktokLink]
+        urls: [tiktokLink],
+        downloadVideos: true,  // Enable download (adjust based on actor)
+        downloadFormat: 'mp4'
       };
-      const apifyUrl = `https://api.apify.com/v2/acts/apify~tiktok-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
+      const apifyUrl = `https://api.apify.com/v2/acts/therealdude~tiktok-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;  // Changed to better actor for downloadUrl
       const apifyRes = await fetch(apifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -74,22 +78,35 @@ async function handleGenerate(recordId, res) {
       });
       if (!apifyRes.ok) throw new Error(`Apify error: ${apifyRes.statusText}`);
       const apifyJson = await apifyRes.json();
-      sourceVideoUrl = apifyJson[0]?.downloadAddr || apifyJson[0]?.playAddr || apifyJson[0]?.videoUrlNoWaterMark;
+      console.log('Apify response:', JSON.stringify(apifyJson));  // Debug response
+      sourceVideoUrl = apifyJson[0]?.downloadUrl || apifyJson[0]?.playUrl || apifyJson[0]?.videoUrl;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Add generation logic here...
+    // Add your face swap/generation logic here (Seedream for faces, Wan Animate/Wavespeed for swap)
+    // Example placeholder:
+    // const aiCharacter = fields['AI Character'][0].url;
+    // const coverImage = await generateCover(tiktokLink, WAVESPEED_API_KEY); // Extract girl thumbnail
+    // const generatedImages = await generateImages(aiCharacter, FAL_AI_API_KEY); // Seedream gen
+    // const outputVideo = await faceSwap(sourceVideoUrl, generatedImages, WAVESPEED_API_KEY); // Wan Animate
+    // await base(MAIN_TABLE_NAME).update(recordId, {
+    //   'Cover Image': [{ url: coverImage }],
+    //   'Generated Images': generatedImages.map(url => ({ url })),
+    //   'Output Video': [{ url: outputVideo }],
+    //   Status: 'Complete',
+    //   Generate: false
+    // });
 
-    // Temporary success
+    // Temporary success until logic added
     await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Complete', Generate: false });
     res.status(200).send('Generation complete');
 
   } catch (error) {
     console.error('Error during generation:', error.message, error.stack);
     try {
-      await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Failed', 'Error Message': error.message || 'Unknown error', Generate: false });
+      await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Failed', Generate: false });  // Removed 'Error Message' to avoid field error
     } catch (updateError) {
       console.error('Update failed:', updateError.message, updateError.stack);
     }
