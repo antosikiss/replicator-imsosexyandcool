@@ -5,14 +5,32 @@ const Airtable = require('airtable');
 const app = express();
 app.use(express.json());
 
+// Global handlers to log and prevent crashes from unhandled errors
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+
 app.get('/generate', async (req, res) => {
-  const recordId = req.query.recordId;
-  await handleGenerate(recordId, res);
+  try {
+    const recordId = req.query.recordId;
+    await handleGenerate(recordId, res);
+  } catch (error) {
+    console.error('Error in GET /generate:', error);
+    res.status(500).send('Server error');
+  }
 });
 
 app.post('/generate', async (req, res) => {
-  const { recordId } = req.body;
-  await handleGenerate(recordId, res);
+  try {
+    const { recordId } = req.body;
+    await handleGenerate(recordId, res);
+  } catch (error) {
+    console.error('Error in POST /generate:', error);
+    res.status(500).send('Server error');
+  }
 });
 
 async function handleGenerate(recordId, res) {
@@ -137,6 +155,7 @@ async function handleGenerate(recordId, res) {
 
     res.status(200).send('Generation completed');
   } catch (error) {
+    console.error('Error during generation:', error.message);
     await base(MAIN_TABLE_NAME).update(recordId, {
       Status: 'Failed',
       'Error Message': error.message,
