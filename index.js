@@ -37,18 +37,25 @@ async function handleGenerate(recordId, res) {
 
   const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
   const AIRTABLE_BASE_ID = 'app3cHH00xp68kQQR'; // From your config
-  const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY; // From config
-  const APIFY_API_KEY = process.env.APIFY_API_KEY; // For video download
-  const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY; // Optional, if using FAL.ai alternative
-  const MAIN_TABLE_NAME = 'Generation'; // Updated to actual table name (not view)
-  // Removed CONFIG_TABLE_NAME since it's causing auth issues and not used
+  const MAIN_TABLE_NAME = 'Generation'; // Actual table name
+  const CONFIG_TABLE_NAME = 'Configuration'; // Put back to fetch other keys
 
-  if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing env vars');
+  if (!AIRTABLE_API_KEY) return res.status(500).send('Missing AIRTABLE_API_KEY env var');
 
   const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
   try {
-    // Removed config fetch since it's unused and failing
+    console.log('Fetching config from table:', CONFIG_TABLE_NAME);
+    const configRecords = await base(CONFIG_TABLE_NAME).select({ view: 'Grid view' }).firstPage(); // Added view if needed
+    if (!configRecords.length) throw new Error('No config record found');
+    const config = configRecords[0].fields;
+
+    const WAVESPEED_API_KEY = config['Wavespeed API Key'];
+    const APIFY_API_KEY = config['Apify API Token'];
+    const FAL_AI_API_KEY = config['FAL.ai API Key']; // Optional
+
+    if (!WAVESPEED_API_KEY) throw new Error('Missing Wavespeed API Key in config');
+    // APIFY_API_KEY is optional but checked later if needed
 
     console.log('Fetching record:', recordId);
     const record = await base(MAIN_TABLE_NAME).find(recordId);
@@ -61,28 +68,32 @@ async function handleGenerate(recordId, res) {
     let sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
     const tiktokLink = fields.Link;
 
-    if (!sourceVideoUrl && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
+    if (!sourceVideoUrl && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video from Apify');
       const apifyData = {
-        urls: [tiktokLink],
-        format: 'mp4'
+        urls: [tiktokLink]
+        // Removed 'format: "mp4"' as it's not in the standard input schema; adjust if your actor requires it
       };
-      const apifyRes = await fetch('https://api.apify.com/v2/acts/apify/tiktok-scraper/runs?token=' + APIFY_API_KEY, {
+      const apifyUrl = `https://api.apify.com/v2/acts/apify~tiktok-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
+      const apifyRes = await fetch(apifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(apifyData)
       });
-      const apifyJson = await apifyRes.json();
-      // Note: This likely needs adaptation; Apify runs asynchronously, so you may need to poll the run status and fetch the dataset
-      // For now, assuming direct access; adjust based on actual Apify response
-      sourceVideoUrl = apifyJson.data.items[0].videoUrl; // Adapt
+      if (!apifyRes.ok) throw new Error(`Apify error: ${apifyRes.statusText}`);
+      const apifyJson = await apifyRes.json(); // Should be array of dataset items
+      // Assuming the first item has the video URL; adjust field name based on actual output (e.g., 'playUrl', 'videoUrl', 'downloadAddr', or 'videoUrlNoWatermark')
+      sourceVideoUrl = apifyJson[0]?.videoUrl || apifyJson[0]?.playUrl || apifyJson[0]?.downloadAddr;
+      if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Image gen...
-    // Video gen...
+    // Image gen... (using FAL_AI_API_KEY if needed)
+    // Video gen... (using WAVESPEED_API_KEY)
     // Success update...
+    // For example:
+    // await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Complete', 'Output Video': [{ url: generatedVideoUrl }], Generate: false });
 
   } catch (error) {
     console.error('Error during generation:', error.message, error.stack);
