@@ -13,6 +13,7 @@ process.on('uncaughtException', (error) => {
 });
 
 app.get('/generate', async (req, res) => {
+  console.log('GET /generate received with query:', JSON.stringify(req.query));
   try {
     const recordId = req.query.recordId;
     await handleGenerate(recordId, res);
@@ -23,6 +24,7 @@ app.get('/generate', async (req, res) => {
 });
 
 app.post('/generate', async (req, res) => {
+  console.log('POST /generate received with body:', JSON.stringify(req.body));
   try {
     const { recordId } = req.body;
     await handleGenerate(recordId, res);
@@ -33,22 +35,21 @@ app.post('/generate', async (req, res) => {
 });
 
 async function handleGenerate(recordId, res) {
+  console.log('handleGenerate called with recordId:', recordId);
   if (!recordId) return res.status(400).send('Missing recordId');
 
   const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
-  const AIRTABLE_BASE_ID = 'app3cHH00xp68kQQR';
+  const AIRTABLE_BASE_ID = 'app5JstpSmtghcbMA';  // Updated to match your base ID
   const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;
   const APIFY_API_KEY = process.env.APIFY_API_KEY;
   const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY; // Optional
   const MAIN_TABLE_NAME = 'Generation';
 
-  if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing required env vars (AIRTABLE_API_KEY or WAVESPEED_API_KEY)');
+  if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing required env vars');
 
   const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
   try {
-    // Removed config fetch from table to avoid authorization issues; using env vars instead
-
     console.log('Fetching record:', recordId);
     const record = await base(MAIN_TABLE_NAME).find(recordId);
     const fields = record.fields;
@@ -79,18 +80,9 @@ async function handleGenerate(recordId, res) {
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Proceed with image/video generation using WAVESPEED_API_KEY, FAL_AI_API_KEY, etc.
-    // Example placeholder:
-    // const generatedImage = await generateImage(fields['AI Character'], FAL_AI_API_KEY);
-    // const generatedVideo = await animateVideo(sourceVideoUrl, generatedImage, WAVESPEED_API_KEY);
-    // await base(MAIN_TABLE_NAME).update(recordId, {
-    //   'Generated Images': [{ url: generatedImage }],
-    //   'Output Video': [{ url: generatedVideo }],
-    //   Status: 'Complete',
-    //   Generate: false
-    // });
+    // Add generation logic here...
 
-    // For now, since generation logic is missing, simulate success
+    // Temporary success
     await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Complete', Generate: false });
     res.status(200).send('Generation complete');
 
