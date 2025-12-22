@@ -42,7 +42,6 @@ async function handleGenerate(recordId, res) {
   const AIRTABLE_BASE_ID = 'app5JstpSmtghcbMA';
   const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;
   const APIFY_API_KEY = process.env.APIFY_API_KEY;
-  const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY;
   const MAIN_TABLE_NAME = 'Generation';
 
   if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing required env vars');
@@ -82,7 +81,7 @@ async function handleGenerate(recordId, res) {
       console.log('Apify response:', JSON.stringify(apifyJson));
       if (apifyJson.length === 0) throw new Error('Empty Apify response');
       const post = apifyJson[0];
-      sourceVideoUrl = post.playAddr || post.downloadAddr || post.videoMeta.playAddr;
+      sourceVideoUrl = post.playAddr || post.downloadAddr || post.webVideoUrl;
       coverImageUrl = post.cover || post.originCover || post.dynamicCover;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
@@ -96,50 +95,54 @@ async function handleGenerate(recordId, res) {
       'Cover Image': coverImageUrl ? [{ url: coverImageUrl }] : []
     });
 
-    // Generate faces with Seedream via fal.ai
-    console.log('Generating images with Seedream');
-    const seedreamUrl = 'https://fal.ai/models/fal-ai/bytedance/seedream/v4.5/edit';
+    // Generate faces with Seedream v4.5 on Wavespeed
+    console.log('Generating images with Seedream v4.5 on Wavespeed');
+    const seedreamUuid = 'bytedance/seedream-v4.5/edit';
+    const seedreamUrl = `https://api.wavespeed.ai/api/v3/${seedreamUuid}`;
     const seedreamData = {
-      prompt: 'Generate high-quality variations of this face, detailed, realistic, same pose and style',
-      image_urls: [aiCharacterUrl],
-      image_size: { width: 1728, height: 2304 },
-      num_images: 1,
-      enable_safety_checker: true
+      images: [aiCharacterUrl],
+      prompt: 'high quality portrait, detailed face, realistic skin, sharp eyes',
+      width: 1728,
+      height: 2304,
+      wait: true
     };
     const seedreamRes = await fetch(seedreamUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Key ${FAL_AI_API_KEY}`
+        'Authorization': `Bearer ${WAVESPEED_API_KEY}`
       },
       body: JSON.stringify(seedreamData)
     });
     if (!seedreamRes.ok) throw new Error(`Seedream error: ${seedreamRes.statusText}`);
     const seedreamJson = await seedreamRes.json();
-    const generatedImages = seedreamJson.images ? seedreamJson.images.map(img => ({ url: img.url })) : [];
+    const generatedImages = seedreamJson.output.map(url => ({ url }));
+    if (generatedImages.length === 0) throw new Error('No generated images from Seedream');
 
     // Update Generated Images
     await base(MAIN_TABLE_NAME).update(recordId, { 'Generated Images': generatedImages });
 
-    // Face swap video with Wavespeed
-    console.log('Performing face swap with Wavespeed');
-    const wavespeedUrl = 'https://api.wavespeed.ai/api/v3/video-face-swap';
-    const wavespeedData = {
-      video_url: sourceVideoUrl,
-      face_image_url: generatedImages.length > 0 ? generatedImages[0].url : aiCharacterUrl,
+    // Animate/face swap with Wan 2.2 Animate on Wavespeed
+    console.log('Performing animation with Wan 2.2 Animate on Wavespeed');
+    const wanUuid = 'wavespeed-ai/wan-2.2/animate';
+    const wanUrl = `https://api.wavespeed.ai/api/v3/${wanUuid}`;
+    const wanData = {
+      image: generatedImages[0].url,
+      video: sourceVideoUrl,
+      mode: 'animate',
       resolution: '720p'
     };
-    const wavespeedRes = await fetch(wavespeedUrl, {
+    const wanRes = await fetch(wanUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${WAVESPEED_API_KEY}`
       },
-      body: JSON.stringify(wavespeedData)
+      body: JSON.stringify(wanData)
     });
-    if (!wavespeedRes.ok) throw new Error(`Wavespeed error: ${wavespeedRes.statusText}`);
-    const wavespeedJson = await wavespeedRes.json();
-    const outputVideoUrl = wavespeedJson.output_video_url;
+    if (!wanRes.ok) throw new Error(`Wan Animate error: ${wanRes.statusText}`);
+    const wanJson = await wanRes.json();
+    const outputVideoUrl = wanJson.output_video_url;
 
     // Success update
     await base(MAIN_TABLE_NAME).update(recordId, {
