@@ -66,9 +66,7 @@ async function handleGenerate(recordId, res) {
     if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video and thumbnail from Apify');
       const apifyData = {
-        urls: [tiktokLink],
-        format: 'mp4',
-        watermark: false
+        urls: [tiktokLink]
       };
       const apifyUrl = `https://api.apify.com/v2/acts/dz_omar~tiktok-video-downloader/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
       const apifyRes = await fetch(apifyUrl, {
@@ -76,11 +74,14 @@ async function handleGenerate(recordId, res) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(apifyData)
       });
-      if (!apifyRes.ok) throw new Error(`Apify error: ${apifyRes.statusText}`);
+      if (!apifyRes.ok) {
+        const errText = await apifyRes.text();
+        throw new Error(`Apify error: ${apifyRes.statusText} - ${errText}`);
+      }
       const apifyJson = await apifyRes.json();
       console.log('Apify response:', JSON.stringify(apifyJson));
-      sourceVideoUrl = apifyJson[0]?.video_download_url_no_watermark || apifyJson[0]?.video_url;
-      coverImageUrl = apifyJson[0]?.thumbnail_url || apifyJson[0]?.cover_image;
+      sourceVideoUrl = apifyJson[0]?.video_download_url_no_watermark || apifyJson[0]?.video_download_url || apifyJson[0]?.playAddr;
+      coverImageUrl = apifyJson[0]?.thumbnail_url || apifyJson[0]?.cover || apifyJson[0]?.originCover;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
@@ -95,7 +96,7 @@ async function handleGenerate(recordId, res) {
 
     // Generate faces with Seedream via fal.ai
     console.log('Generating images with Seedream');
-    const seedreamUrl = 'https://fal.ai/models/fal-ai/bytedance/seedream/v4/edit';
+    const seedreamUrl = 'https://fal.ai/models/fal-ai/bytedance/seedream/v4.5/edit';
     const seedreamData = {
       prompt: 'Generate high-quality variations of this face, detailed, realistic, same pose and style',
       image_urls: [aiCharacterUrl],
@@ -151,7 +152,6 @@ async function handleGenerate(recordId, res) {
     try {
       await base(MAIN_TABLE_NAME).update(recordId, {
         Status: 'Failed',
-        'Error Message': error.message || 'Unknown error',
         Generate: false
       });
     } catch (updateError) {
