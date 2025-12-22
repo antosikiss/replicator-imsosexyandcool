@@ -5,32 +5,14 @@ const Airtable = require('airtable');
 const app = express();
 app.use(express.json());
 
-// Global handlers to log and prevent crashes from unhandled errors
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-});
-
 app.get('/generate', async (req, res) => {
-  try {
-    const recordId = req.query.recordId;
-    await handleGenerate(recordId, res);
-  } catch (error) {
-    console.error('Error in GET /generate:', error);
-    res.status(500).send('Server error');
-  }
+  const recordId = req.query.recordId;
+  await handleGenerate(recordId, res);
 });
 
 app.post('/generate', async (req, res) => {
-  try {
-    const { recordId } = req.body;
-    await handleGenerate(recordId, res);
-  } catch (error) {
-    console.error('Error in POST /generate:', error);
-    res.status(500).send('Server error');
-  }
+  const { recordId } = req.body;
+  await handleGenerate(recordId, res);
 });
 
 async function handleGenerate(recordId, res) {
@@ -41,7 +23,7 @@ async function handleGenerate(recordId, res) {
   const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;  // From config
   const APIFY_API_KEY = process.env.APIFY_API_KEY;  // For video download
   const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY;  // Optional, if using FAL.ai alternative
-  const MAIN_TABLE_NAME = 'Grid view';  // Exact from your table
+  const MAIN_TABLE_NAME = 'TikTok Replications';  // Change to your exact main table name (not view name)
   const CONFIG_TABLE_NAME = 'Configuration';
 
   if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing env vars');
@@ -155,7 +137,6 @@ async function handleGenerate(recordId, res) {
 
     res.status(200).send('Generation completed');
   } catch (error) {
-    console.error('Error during generation:', error.message);
     await base(MAIN_TABLE_NAME).update(recordId, {
       Status: 'Failed',
       'Error Message': error.message,
