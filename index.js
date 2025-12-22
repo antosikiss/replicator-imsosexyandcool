@@ -1,0 +1,131 @@
+const express = require('express');
+const fetch = require('node-fetch');
+const Airtable = require('airtable');
+
+const app = express();
+app.use(express.json());
+
+app.get('/generate', async (req, res) => {
+  const recordId = req.query.recordId;
+  await handleGenerate(recordId, res);
+});
+
+app.post('/generate', async (req, res) => {
+  const { recordId } = req.body;
+  await handleGenerate(recordId, res);
+});
+
+async function handleGenerate(recordId, res) {
+  if (!recordId) return res.status(400).send('Missing recordId');
+
+  const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
+  const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'app3cHH00xp68kQQR';
+  const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;
+  const MAIN_TABLE_NAME = 'Grid view';  // Replace with exact main table name if not 'Grid view'
+  const CONFIG_TABLE_NAME = 'Configuration';
+
+  if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !WAVESPEED_API_KEY) return res.status(500).send('Missing env vars');
+
+  const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
+
+  try {
+    // Fetch config
+    const configRecords = await base(CONFIG_TABLE_NAME).select().firstPage();
+    if (!configRecords.length) throw new Error('No config');
+    const config = configRecords[0].fields;
+
+    // Fetch record
+    const record = await base(MAIN_TABLE_NAME).find(recordId);
+    const fields = record.fields;
+    if (!fields.Generate) return res.status(200).send('Generate not triggered');
+
+    const prompt = fields.Link;  // Use 'Link' as prompt (adapt if not)
+    const sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
+    if (!sourceVideoUrl) throw new Error('Missing Source Video');
+
+    await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Generating' });
+
+    // Generate images (Seedream 4.5)
+    const numImages = parseInt(config['# num_images']) || 1;
+    const imageSize = config['Image Size'] || '1728x2304';
+    const imageOutputs = [];
+    for (let i = 0; i < numImages; i++) {
+      const imageData = {
+        prompt,
+        size: imageSize,
+        enable_sync_mode: false
+      };
+      const submitRes = await fetch('https://api.wavespeed.ai/api/v3/bytedance/seedream-v4.5', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${WAVESPEED_API_KEY}` },
+        body: JSON.stringify(imageData)
+      });
+      const submitJson = await submitRes.json();
+      if (submitJson.code !== 200) throw new Error('Image submission failed');
+
+      let status = submitJson.data.status;
+      let output;
+      while (status === 'created' || status === 'processing') {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${submitJson.data.id}/result`, {
+          headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
+        });
+        const pollJson = await pollRes.json();
+        status = pollJson.data.status;
+        if (status === 'completed') output = pollJson.data.outputs[0];
+        if (status === 'failed') throw new Error('Image generation failed');
+      }
+      imageOutputs.push(output);
+    }
+
+    // Generate video (WAN 2.2 Animate, use first image as character)
+    const characterImageUrl = imageOutputs[0];
+    const videoResolution = config['Video Resolution'] ? config['Video Resolution'].toLowerCase() : '720p';
+    const videoData = {
+      image: characterImageUrl,
+      video: sourceVideoUrl,
+      mode: 'replace',
+      prompt,
+      resolution: videoResolution
+    };
+    const videoSubmitRes = await fetch('https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/animate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${WAVESPEED_API_KEY}` },
+      body: JSON.stringify(videoData)
+    });
+    const videoSubmitJson = await videoSubmitRes.json();
+    if (videoSubmitJson.code !== 200) throw new Error('Video submission failed');
+
+    let videoStatus = videoSubmitJson.data.status;
+    let videoOutput;
+    while (videoStatus === 'created' || videoStatus === 'processing') {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      const videoPollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${videoSubmitJson.data.id}/result`, {
+        headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
+      });
+      const videoPollJson = await videoPollRes.json();
+      videoStatus = videoPollJson.data.status;
+      if (videoStatus === 'completed') videoOutput = videoPollJson.data.outputs[0];
+      if (videoStatus === 'failed') throw new Error('Video generation failed');
+    }
+
+    await base(MAIN_TABLE_NAME).update(recordId, {
+      Status: 'Success',
+      'Generated Images': imageOutputs.map(url => ({ url })),
+      'Output Video': [{ url: videoOutput }],
+      Generate: false
+    });
+
+    res.status(200).send('Generation completed');
+  } catch (error) {
+    await base(MAIN_TABLE_NAME).update(recordId, {
+      Status: 'Failed',
+      'Error Message': error.message,
+      Generate: false
+    });
+    res.status(500).send(error.message);
+  }
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
