@@ -45,7 +45,7 @@ async function handleGenerate(recordId, res) {
   const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY;
   const MAIN_TABLE_NAME = 'Generation';
 
-  if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY || !APIFY_API_KEY || !FAL_AI_API_KEY) return res.status(500).send('Missing required env vars');
+  if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing required env vars');
 
   const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
@@ -66,12 +66,11 @@ async function handleGenerate(recordId, res) {
     if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video and thumbnail from Apify');
       const apifyData = {
-        postURLs: [tiktokLink],
-        shouldDownloadVideos: true,
-        shouldDownloadCovers: true,
-        resultsPerPage: 1
+        urls: [tiktokLink],
+        format: 'mp4',
+        watermark: false
       };
-      const apifyUrl = `https://api.apify.com/v2/acts/clockworks~tiktok-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
+      const apifyUrl = `https://api.apify.com/v2/acts/dz_omar~tiktok-video-downloader/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
       const apifyRes = await fetch(apifyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,9 +79,8 @@ async function handleGenerate(recordId, res) {
       if (!apifyRes.ok) throw new Error(`Apify error: ${apifyRes.statusText}`);
       const apifyJson = await apifyRes.json();
       console.log('Apify response:', JSON.stringify(apifyJson));
-      if (!apifyJson.length) throw new Error('No data in Apify response');
-      sourceVideoUrl = apifyJson[0].downloadUrl || apifyJson[0].videoUrl;
-      coverImageUrl = apifyJson[0].thumbnailUrl || apifyJson[0].coverUrl;
+      sourceVideoUrl = apifyJson[0]?.video_download_url_no_watermark || apifyJson[0]?.video_url;
+      coverImageUrl = apifyJson[0]?.thumbnail_url || apifyJson[0]?.cover_image;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
@@ -97,7 +95,7 @@ async function handleGenerate(recordId, res) {
 
     // Generate faces with Seedream via fal.ai
     console.log('Generating images with Seedream');
-    const seedreamUrl = 'https://fal.ai/models/fal-ai/bytedance/seedream/v4.5/edit';
+    const seedreamUrl = 'https://fal.ai/models/fal-ai/bytedance/seedream/v4/edit';
     const seedreamData = {
       prompt: 'Generate high-quality variations of this face, detailed, realistic, same pose and style',
       image_urls: [aiCharacterUrl],
@@ -120,44 +118,25 @@ async function handleGenerate(recordId, res) {
     // Update Generated Images
     await base(MAIN_TABLE_NAME).update(recordId, { 'Generated Images': generatedImages });
 
-    // Face swap video with Wavespeed
-    console.log('Performing face swap with Wavespeed');
-    const wavespeedEndpoint = 'https://api.wavespeed.ai/api/v3/wavespeed-ai/video-face-swap';
-    const wavespeedData = {
-      video: sourceVideoUrl,
-      face_image: generatedImages.length > 0 ? generatedImages[0].url : aiCharacterUrl  // Fallback to original if no gen
+    // Face swap video with Wan Animate on fal.ai
+    console.log('Performing face swap with Wan Animate');
+    const wanAnimateUrl = 'https://fal.ai/models/fal-ai/wan/v2.2-14b/animate/move';
+    const wanData = {
+      video_url: sourceVideoUrl,
+      image_url: generatedImages.length > 0 ? generatedImages[0].url : aiCharacterUrl,  // Use generated or fallback
+      resolution: '720p'
     };
-    const wavespeedRes = await fetch(wavespeedEndpoint, {
+    const wanRes = await fetch(wanAnimateUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${WAVESPEED_API_KEY}`
+        'Authorization': `Key ${FAL_AI_API_KEY}`
       },
-      body: JSON.stringify(wavespeedData)
+      body: JSON.stringify(wanData)
     });
-    if (!wavespeedRes.ok) throw new Error(`Wavespeed error: ${wavespeedRes.statusText}`);
-    const wavespeedJson = await wavespeedRes.json();
-    const requestId = wavespeedJson.data?.id || wavespeedJson.requestId;
-
-    // Poll for result
-    let outputVideoUrl;
-    const pollInterval = 5000; // 5 seconds
-    const maxAttempts = 60; // 5 minutes max
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
-      const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${requestId}/result`, {
-        headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
-      });
-      if (!pollRes.ok) continue;
-      const pollJson = await pollRes.json();
-      if (pollJson.status === 'completed') {
-        outputVideoUrl = pollJson.output_video_url;  // Adjust field if different
-        break;
-      } else if (pollJson.status === 'failed') {
-        throw new Error('Wavespeed processing failed');
-      }
-    }
-    if (!outputVideoUrl) throw new Error('Wavespeed timeout');
+    if (!wanRes.ok) throw new Error(`Wan Animate error: ${wanRes.statusText}`);
+    const wanJson = await wanRes.json();
+    const outputVideoUrl = wanJson.video_url;  // Adjust based on actual response
 
     // Success update
     await base(MAIN_TABLE_NAME).update(recordId, {
