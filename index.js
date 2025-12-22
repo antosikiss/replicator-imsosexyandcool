@@ -5,14 +5,32 @@ const Airtable = require('airtable');
 const app = express();
 app.use(express.json());
 
+// Global handlers to log and prevent crashes
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason ? reason.stack || reason : 'No reason');
+});
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error.stack || error);
+});
+
 app.get('/generate', async (req, res) => {
-  const recordId = req.query.recordId;
-  await handleGenerate(recordId, res);
+  try {
+    const recordId = req.query.recordId;
+    await handleGenerate(recordId, res);
+  } catch (error) {
+    console.error('Error in GET /generate:', error.stack || error);
+    res.status(500).send('Server error');
+  }
 });
 
 app.post('/generate', async (req, res) => {
-  const { recordId } = req.body;
-  await handleGenerate(recordId, res);
+  try {
+    const { recordId } = req.body;
+    await handleGenerate(recordId, res);
+  } catch (error) {
+    console.error('Error in POST /generate:', error.stack || error);
+    res.status(500).send('Server error');
+  }
 });
 
 async function handleGenerate(recordId, res) {
@@ -23,7 +41,7 @@ async function handleGenerate(recordId, res) {
   const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;  // From config
   const APIFY_API_KEY = process.env.APIFY_API_KEY;  // For video download
   const FAL_AI_API_KEY = process.env.FAL_AI_API_KEY;  // Optional, if using FAL.ai alternative
-  const MAIN_TABLE_NAME = 'TikTok Replications';  // Change to your exact main table name (not view name)
+  const MAIN_TABLE_NAME = 'Grid view';  // Exact from your table
   const CONFIG_TABLE_NAME = 'Configuration';
 
   if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing env vars');
@@ -31,24 +49,23 @@ async function handleGenerate(recordId, res) {
   const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
   try {
-    // Fetch config
+    console.log('Fetching config from table:', CONFIG_TABLE_NAME);
     const configRecords = await base(CONFIG_TABLE_NAME).select().firstPage();
     if (!configRecords.length) throw new Error('No config');
     const config = configRecords[0].fields;
 
-    // Fetch record
+    console.log('Fetching record:', recordId);
     const record = await base(MAIN_TABLE_NAME).find(recordId);
     const fields = record.fields;
     if (!fields.Generate) return res.status(200).send('Generate not triggered');
 
-    // Set status to Generating immediately
     await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Generating' });
 
     let sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
     const tiktokLink = fields.Link;
 
-    // If no Source Video but Link is TikTok URL, download via Apify
     if (!sourceVideoUrl && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
+      console.log('Downloading video from Apify');
       const apifyData = {
         urls: [tiktokLink],
         format: 'mp4'
@@ -59,89 +76,21 @@ async function handleGenerate(recordId, res) {
         body: JSON.stringify(apifyData)
       });
       const apifyJson = await apifyRes.json();
-      // Poll for Apify result (simplified; add full polling if needed)
-      sourceVideoUrl = apifyJson.data.items[0].videoUrl;  // Adapt to actual response
+      sourceVideoUrl = apifyJson.data.items[0].videoUrl;  // Adapt
     }
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Generate images (Seedream 4.5)
-    const numImages = parseInt(config['# num_images']) || 1;
-    const imageSize = config['Image Size'] || '1728x2304';
-    const imageOutputs = [];
-    for (let i = 0; i < numImages; i++) {
-      const imageData = {
-        prompt: fields.Link,  // Use Link as prompt (adapt if needed)
-        size: imageSize,
-        enable_sync_mode: false
-      };
-      const submitRes = await fetch('https://api.wavespeed.ai/api/v3/bytedance/seedream-v4.5', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${WAVESPEED_API_KEY}` },
-        body: JSON.stringify(imageData)
-      });
-      const submitJson = await submitRes.json();
-      if (submitJson.code !== 200) throw new Error('Image submission failed');
+    // Image gen...
+    // Video gen...
 
-      let status = submitJson.data.status;
-      let output;
-      while (status === 'created' || status === 'processing') {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${submitJson.data.id}/result`, {
-          headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
-        });
-        const pollJson = await pollRes.json();
-        status = pollJson.data.status;
-        if (status === 'completed') output = pollJson.data.outputs[0];
-        if (status === 'failed') throw new Error('Image generation failed');
-      }
-      imageOutputs.push(output);
-    }
-
-    // Generate video (WAN 2.2 Animate)
-    const characterImageUrl = imageOutputs[0];
-    const videoResolution = config['Video Resolution'] ? config['Video Resolution'].toLowerCase() : '720p';
-    const videoData = {
-      image: characterImageUrl,
-      video: sourceVideoUrl,
-      mode: 'replace',
-      prompt: fields.Link,
-      resolution: videoResolution
-    };
-    const videoSubmitRes = await fetch('https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/animate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${WAVESPEED_API_KEY}` },
-      body: JSON.stringify(videoData)
-    });
-    const videoSubmitJson = await videoSubmitRes.json();
-    if (videoSubmitJson.code !== 200) throw new Error('Video submission failed');
-
-    let videoStatus = videoSubmitJson.data.status;
-    let videoOutput;
-    while (videoStatus === 'created' || videoStatus === 'processing') {
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      const videoPollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${videoSubmitJson.data.id}/result`, {
-        headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
-      });
-      const videoPollJson = await videoPollRes.json();
-      videoStatus = videoPollJson.data.status;
-      if (videoStatus === 'completed') videoOutput = videoPollJson.data.outputs[0];
-      if (videoStatus === 'failed') throw new Error('Video generation failed');
-    }
-
-    await base(MAIN_TABLE_NAME).update(recordId, {
-      Status: 'Success',
-      'Generated Images': imageOutputs.map(url => ({ url })),
-      'Output Video': [{ url: videoOutput }],
-      Generate: false
-    });
-
-    res.status(200).send('Generation completed');
+    // Success update...
   } catch (error) {
-    await base(MAIN_TABLE_NAME).update(recordId, {
-      Status: 'Failed',
-      'Error Message': error.message,
-      Generate: false
-    });
+    console.error('Error during generation:', error.message, error.stack);
+    try {
+      await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Failed', 'Error Message': error.message, Generate: false });
+    } catch (updateError) {
+      console.error('Update failed:', updateError.message, updateError.stack);
+    }
     res.status(500).send(error.message);
   }
 }
