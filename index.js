@@ -80,8 +80,10 @@ async function handleGenerate(recordId, res) {
       }
       const apifyJson = await apifyRes.json();
       console.log('Apify response:', JSON.stringify(apifyJson));
-      sourceVideoUrl = apifyJson[0]?.playAddr || apifyJson[0]?.video_download_url_no_watermark || apifyJson[0]?.downloadAddr;
-      coverImageUrl = apifyJson[0]?.cover || apifyJson[0]?.originCover || apifyJson[0]?.thumbnail_url;
+      if (apifyJson.length === 0) throw new Error('Empty Apify response');
+      const post = apifyJson[0];
+      sourceVideoUrl = post.playAddr || post.downloadAddr || post.videoMeta.playAddr;
+      coverImageUrl = post.cover || post.originCover || post.dynamicCover;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
     }
 
@@ -152,6 +154,7 @@ async function handleGenerate(recordId, res) {
     try {
       await base(MAIN_TABLE_NAME).update(recordId, {
         Status: 'Failed',
+        'Error Message': error.message || 'Unknown error',
         Generate: false
       });
     } catch (updateError) {
