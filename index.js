@@ -1,284 +1,215 @@
-#!/usr/bin/env node
+const express = require('express');
+const fetch = require('node-fetch');
+const Airtable = require('airtable');
+const app = express();
+app.use(express.json());
 
-// ============================================================================
-// Airtable TikTok/Instagram Face Swap Processor
-// Single-file version for online deployment (Railway, Render, etc.)
-// ============================================================================
-
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import http from 'http';
-import https from 'https';
-
-// ============================================================================
-// CONFIGURATION FROM ENVIRONMENT VARIABLES
-// ============================================================================
-
-const CONFIG = {
-  airtable: {
-    token: process.env.AIRTABLE_API_KEY,
-    baseId: process.env.AIRTABLE_BASE_ID
-  },
-  apiKeys: {
-    apify: process.env.APIFY_API_KEY,
-    fal: process.env.FAL_API_KEY || '',
-    wavespeed: process.env.WAVESPEED_API_KEY || ''
-  }
-};
-
-// Validate required config
-function validateConfig() {
-  const errors = [];
-  if (!CONFIG.airtable.token) errors.push('AIRTABLE_API_KEY missing');
-  if (!CONFIG.airtable.baseId) errors.push('AIRTABLE_BASE_ID missing');
-  if (!CONFIG.apiKeys.apify) errors.push('APIFY_API_KEY missing');
-
-  if (errors.length > 0) {
-    console.error('Configuration errors:');
-    errors.forEach(err => console.error('   - ' + err));
-    process.exit(1);
-  }
-}
-
-validateConfig();
-
-console.log('Configuration loaded from environment variables');
-
-// ============================================================================
-// HTTP AGENTS
-// ============================================================================
-
-const httpsAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 100,
-  timeout: 300000,
-  keepAliveMsecs: 30000
+// Global handlers
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason ? reason.stack || reason : 'No reason');
+});
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error.stack || error);
 });
 
-// ============================================================================
-// HELPERS
-// ============================================================================
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function arrayToBase64(bytes) {
-  const CHUNK = 0x8000;
-  let str = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    str += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+app.get('/generate', async (req, res) => {
+  console.log('GET /generate received with query:', JSON.stringify(req.query));
+  try {
+    const recordId = req.query.recordId;
+    await handleGenerate(recordId, res);
+  } catch (error) {
+    console.error('Error in GET /generate:', error.stack || error);
+    res.status(500).send('Server error');
   }
-  return btoa(str);
-}
+});
 
-function detectPlatform(url) {
-  if (url.includes('tiktok.com')) return 'tiktok';
-  if (url.includes('instagram.com')) return 'instagram';
-  return null;
-}
-
-async function urlToDataUri(url) {
-  if (url.startsWith('data:')) return url;
-  const response = await fetch(url, { agent: httpsAgent });
-  if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
-  const buffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  const base64 = arrayToBase64(bytes);
-  const contentType = response.headers.get('content-type') || 'image/jpeg';
-  return `data:${contentType};base64,${base64}`;
-}
-
-// ============================================================================
-// CONCURRENCY & CIRCUIT BREAKER
-// ============================================================================
-
-class ConcurrencyLimiter {
-  constructor(max) { this.max = max; this.running = 0; this.queue = []; }
-  async run(fn) {
-    while (this.running >= this.max) await new Promise(r => this.queue.push(r));
-    this.running++;
-    try { return await fn(); }
-    finally { this.running--; if (this.queue.length) this.queue.shift()(); }
+app.post('/generate', async (req, res) => {
+  console.log('POST /generate received with body:', JSON.stringify(req.body));
+  try {
+    const { recordId } = req.body;
+    await handleGenerate(recordId, res);
+  } catch (error) {
+    console.error('Error in POST /generate:', error.stack || error);
+    res.status(500).send('Server error');
   }
-}
+});
 
-class CircuitBreaker {
-  constructor(threshold = 5, cooldownMs = 60000) {
-    this.threshold = threshold; this.cooldownMs = cooldownMs;
-    this.failures = 0; this.lastFailure = null;
-  }
-  canProceed() {
-    if (this.failures < this.threshold) return true;
-    if (Date.now() - this.lastFailure > this.cooldownMs) { this.failures = 0; return true; }
-    return false;
-  }
-  recordFailure() { this.failures++; this.lastFailure = Date.now(); }
-  recordSuccess() { this.failures = 0; }
-}
-
-// ============================================================================
-// PROGRESS TRACKER
-// ============================================================================
-
-class ProgressTracker {
-  constructor() { this.total = 0; this.processed = 0; this.success = 0; this.failed = 0; this.startTime = Date.now(); }
-  setTotal(n) { this.total = n; }
-  increment(success = true) { this.processed++; if (success) this.success++; else this.failed++; }
-  showFinalSummary() {
-    const elapsed = Math.round((Date.now() - this.startTime) / 1000);
-    console.log('\n' + '='.repeat(60));
-    console.log('FINAL SUMMARY');
-    console.log('='.repeat(60));
-    console.log(`Processed: ${this.processed} | Success: ${this.success} | Failed: ${this.failed}`);
-    console.log(`Time: ${elapsed}s`);
-    console.log('='.repeat(60));
-  }
-}
-
-// ============================================================================
-// AIRTABLE HELPERS
-// ============================================================================
-
-async function fetchAirtableRecords(table, filter = '') {
-  let url = `https://api.airtable.com/v0/${CONFIG.airtable.baseId}/${encodeURIComponent(table)}`;
-  if (filter) url += `?filterByFormula=${encodeURIComponent(filter)}`;
-
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${CONFIG.airtable.token}` },
-    agent: httpsAgent
-  });
-  if (!res.ok) throw new Error(`Airtable fetch error: ${await res.text()}`);
-  const data = await res.json();
-  return data.records || [];
-}
-
-async function updateAirtableRecord(table, id, fields) {
-  const res = await fetch(
-    `https://api.airtable.com/v0/${CONFIG.airtable.baseId}/${encodeURIComponent(table)}/${id}`,
-    {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${CONFIG.airtable.token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ fields }),
-      agent: httpsAgent
+async function pollWavespeedResult(requestId, maxAttempts = 60, interval = 5000) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(resolve => setTimeout(resolve, interval));
+    const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${requestId}/result`, {
+      headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
+    });
+    if (!pollRes.ok) continue;
+    const pollJson = await pollRes.json();
+    if (pollJson.status === 'completed' || pollJson.output) {
+      return pollJson;
     }
-  );
-  if (!res.ok) throw new Error(`Airtable update error: ${await res.text()}`);
+    if (pollJson.status === 'failed') {
+      throw new Error('Wavespeed job failed');
+    }
+  }
+  throw new Error('Wavespeed timeout');
 }
 
-// ============================================================================
-// APIFY SCRAPERS
-// ============================================================================
+async function handleGenerate(recordId, res) {
+  console.log('handleGenerate called with recordId:', recordId);
+  if (!recordId) return res.status(400).send('Missing recordId');
 
-async function fetchTikTokVideo(url) {
-  // ... (same as original – kept unchanged for brevity, but included fully below)
-  console.log(`[Apify TikTok] Fetching: ${url}`);
-  const actorId = 'clockworks~tiktok-video-scraper';
-  const input = { postURLs: [url], shouldDownloadVideos: true, shouldDownloadCovers: true };
+  const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
+  const AIRTABLE_BASE_ID = 'app5JstpSmtghcbMA';
+  const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;
+  const APIFY_API_KEY = process.env.APIFY_API_KEY;
+  const MAIN_TABLE_NAME = 'Generation';
 
-  const runRes = await fetch(`https://api.apify.com/v2/acts/${actorId}/runs?token=${CONFIG.apiKeys.apify}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), agent: httpsAgent
-  });
-  if (!runRes.ok) throw new Error(`Apify run failed: ${await runRes.text()}`);
+  if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing required env vars');
 
-  const { data: { id: runId, defaultDatasetId } } = await runRes.json();
+  const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
-  let status = 'RUNNING';
-  let attempts = 0;
-  while ((status === 'RUNNING' || status === 'READY') && attempts++ < 60) {
-    await sleep(3000);
-    const statusRes = await fetch(`https://api.apify.com/v2/actor-runs/${runId}?token=${CONFIG.apiKeys.apify}`, { agent: httpsAgent });
-    status = (await statusRes.json()).data.status;
+  try {
+    console.log('Fetching record:', recordId);
+    const record = await base(MAIN_TABLE_NAME).find(recordId);
+    const fields = record.fields;
+
+    if (!fields.Generate) return res.status(200).send('Generate not triggered');
+
+    await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Generating' });
+
+    let sourceVideoUrl = fields['Source_Video'] ? fields['Source_Video'][0].url : null;
+    let coverImageUrl = fields['Cover_Image'] ? fields['Cover_Image'][0].url : null;
+    const tiktokLink = fields.Link;
+    const aiCharacterUrl = fields['AI_Character'] ? fields['AI_Character'][0].url : null;
+
+    if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
+      console.log('Downloading video and thumbnail from Apify');
+      const apifyData = {
+        urls: [tiktokLink]
+      };
+      const apifyUrl = `https://api.apify.com/v2/acts/S5h7zRLfKFEr8pdj7/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
+      const apifyRes = await fetch(apifyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(apifyData)
+      });
+      if (!apifyRes.ok) {
+        const errText = await apifyRes.text();
+        throw new Error(`Apify error: ${apifyRes.statusText} - ${errText}`);
+      }
+      const apifyJson = await apifyRes.json();
+      console.log('Apify response:', JSON.stringify(apifyJson));
+      if (apifyJson.length === 0) throw new Error('Empty Apify response');
+      const post = apifyJson[0];
+      sourceVideoUrl = post.playAddr || post.videoMeta?.playAddr || post.downloadAddr || post.webVideoUrl || post.videoUrl;
+      coverImageUrl = post.cover || post.videoMeta?.cover || post.originCover || post.dynamicCover;
+      if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
+
+      // Force .mp4 for Airtable preview
+      if (!sourceVideoUrl.endsWith('.mp4')) sourceVideoUrl += '.mp4';
+    }
+
+    if (!sourceVideoUrl) throw new Error('Missing Source Video');
+
+    // Update Source_Video and Cover_Image
+    await base(MAIN_TABLE_NAME).update(recordId, {
+      'Source_Video': [{ url: sourceVideoUrl }],
+      'Cover_Image': coverImageUrl ? [{ url: coverImageUrl }] : []
+    });
+
+    // Fallback to coverImageUrl if aiCharacterUrl is missing
+    const faceImageUrl = aiCharacterUrl || coverImageUrl;
+    if (!faceImageUrl) throw new Error('Missing AI_Character or Cover_Image for face swap');
+
+    // Generate faces with Seedream v4.5 on Wavespeed (async)
+    console.log('Generating images with Seedream v4.5 on Wavespeed');
+    const seedreamUuid = 'bytedance/seedream-v4.5/edit';
+    const seedreamUrl = `https://api.wavespeed.ai/api/v3/${seedreamUuid}`;
+    const seedreamData = {
+      images: [faceImageUrl],
+      prompt: 'high quality portrait, detailed face, realistic skin, sharp eyes',
+      width: 1728,
+      height: 2304
+    };
+    const seedreamRes = await fetch(seedreamUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${WAVESPEED_API_KEY}`
+      },
+      body: JSON.stringify(seedreamData)
+    });
+    if (!seedreamRes.ok) throw new Error(`Seedream error: ${seedreamRes.statusText}`);
+    const seedreamJson = await seedreamRes.json();
+    const seedreamRequestId = seedreamJson.id || seedreamJson.requestId;
+    const seedreamResult = await pollWavespeedResult(seedreamRequestId);
+    const generatedImages = (seedreamResult.output || []).map(url => ({ url }));
+    if (generatedImages.length === 0) throw new Error('No generated images from Seedream');
+
+    // Update Generated_Images
+    await base(MAIN_TABLE_NAME).update(recordId, { 'Generated_Images': generatedImages });
+
+    // Animate/face swap with Wan 2.2 Animate on Wavespeed (async)
+    console.log('Performing animation with Wan 2.2 Animate on Wavespeed');
+    const wanUuid = 'wavespeed-ai/wan-2.2/animate';
+    const wanUrl = `https://api.wavespeed.ai/api/v3/${wanUuid}`;
+    const wanData = {
+      image: generatedImages[0].url,
+      video: sourceVideoUrl,
+      mode: 'animate',
+      resolution: '720p'
+    };
+    const wanRes = await fetch(wanUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${WAVESPEED_API_KEY}`
+      },
+      body: JSON.stringify(wanData)
+    });
+    if (!wanRes.ok) throw new Error(`Wan Animate error: ${wanRes.statusText}`);
+    const wanJson = await wanRes.json();
+    const wanRequestId = wanJson.id || wanJson.requestId;
+    const wanResult = await pollWavespeedResult(wanRequestId);
+    const outputVideoUrl = wanResult.output_video_url;
+
+    // Success update
+    await base(MAIN_TABLE_NAME).update(recordId, {
+      'Output_Video': [{ url: outputVideoUrl }],
+      Status: 'Complete',
+      Generate: false
+    });
+    res.status(200).send('Generation complete');
+
+  } catch (error) {
+    console.error('Error during generation:', error.message, error.stack);
+    try {
+      await base(MAIN_TABLE_NAME).update(recordId, {
+        Status: 'Failed',
+        Generate: false
+      });
+    } catch (updateError) {
+      console.error('Update failed:', updateError.message, updateError.stack);
+    }
+    res.status(500).send(error.message || 'Unknown error');
   }
-  if (status !== 'SUCCEEDED') throw new Error(`Apify failed: ${status}`);
-
-  const items = await (await fetch(`https://api.apify.com/v2/datasets/${defaultDatasetId}/items?token=${CONFIG.apiKeys.apify}`, { agent: httpsAgent })).json();
-  const video = items[0];
-
-  let videoUrl = video.mediaUrls?.[0] || video.videoMeta?.downloadAddr || video.videoMeta?.originalDownloadAddr || video.videoMeta?.playAddr;
-  let coverUrl = video.videoMeta?.coverUrl || video.videoMeta?.originalCoverUrl || video.videoMeta?.originCover || video.videoMeta?.dynamicCover;
-  const width = video.videoMeta?.width || 720;
-  const height = video.videoMeta?.height || 1280;
-
-  if (!videoUrl) throw new Error('No video URL found');
-
-  return { videoUrl, coverUrl, width, height };
 }
 
-// Instagram scraper – similar pattern (kept full in actual file)
-
-// ============================================================================
-// IMAGE & VIDEO APIs (Wavespeed & FAL.ai)
-// ============================================================================
-
-// All the class definitions (WavespeedSeedream45API, FalWanAnimateAPI, etc.) go here – unchanged from previous version
-
-// For space, I'll summarize: include all the classes exactly as in the previous long version:
-// - WavespeedSeedream40API, WavespeedSeedream45API, WavespeedNanobanaProAPI, WavespeedWanAnimateAPI
-// - Fal equivalents if you want fallback
-
-// ============================================================================
-// MAIN
-// ============================================================================
-
-async function main() {
-  console.log('\nStarting Airtable Face Swap Processor');
-
-  const configRecords = await fetchAirtableRecords('Configuration');
-  if (configRecords.length === 0) {
-    console.error('No Configuration record found in Airtable');
-    return;
+async function pollWavespeedResult(requestId, maxAttempts = 60, interval = 5000) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(resolve => setTimeout(resolve, interval));
+    const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${requestId}/result`, {
+      headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
+    });
+    if (!pollRes.ok) continue;
+    const pollJson = await pollRes.json();
+    if (pollJson.status === 'completed' || pollJson.output) {
+      return pollJson;
+    }
+    if (pollJson.status === 'failed') {
+      throw new Error('Wavespeed job failed');
+    }
   }
-
-  const cfg = configRecords[0].fields;
-  const provider = cfg.API_Provider || 'Wavespeed';
-  const model = cfg.Image_Model || 'Seedream 4.5';
-  const numImages = Number(cfg.num_images || 4);
-  const resolution = cfg.Video_Resolution || '480p';
-  const enableNSFW = !!cfg.Enable_NSFW;
-
-  let imageAPI, videoAPI;
-  const key = provider === 'FAL.ai' ? CONFIG.apiKeys.fal : CONFIG.apiKeys.wavespeed;
-
-  if (provider === 'FAL.ai') {
-    // Use FAL classes
-  } else {
-    // Use Wavespeed classes (default for your key)
-    if (model.includes('4.0')) imageAPI = new WavespeedSeedream40API(key);
-    else if (model.includes('Nanobanana')) imageAPI = new WavespeedNanobanaProAPI(key);
-    else imageAPI = new WavespeedSeedream45API(key);
-    videoAPI = new WavespeedWanAnimateAPI(key);
-  }
-
-  const filter = `AND(OR({Link} != "", {Source_Video} != ""), {AI_Character} != "", {Output_Video} = "")`;
-  const records = await fetchAirtableRecords('Generation', filter);
-
-  if (records.length === 0) {
-    console.log('No pending jobs');
-    return;
-  }
-
-  console.log(`Found ${records.length} jobs`);
-
-  const limiter = new ConcurrencyLimiter(2);
-  const breaker = new CircuitBreaker();
-  const tracker = new ProgressTracker();
-  tracker.setTotal(records.length);
-
-  await Promise.all(records.map(record => limiter.run(() => processRecord(record, { imageAPI, videoAPI, breaker, tracker, numImages, resolution, enableNSFW }))));
-
-  tracker.showFinalSummary();
+  throw new Error('Wavespeed timeout');
 }
 
-async function processRecord(record, opts) {
-  // Full processing logic – same as original
-  // Includes marking Status, fetching video/cover, generating images, animating, updating Airtable
-}
-
-main().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
