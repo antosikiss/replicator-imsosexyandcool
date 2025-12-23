@@ -57,10 +57,10 @@ async function handleGenerate(recordId, res) {
 
     await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Generating' });
 
-    let sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
-    let coverImageUrl = fields['Cover Image'] ? fields['Cover Image'][0].url : null;
+    let sourceVideoUrl = fields['Source_Video'] ? fields['Source_Video'][0].url : null;
+    let coverImageUrl = fields['Cover_Image'] ? fields['Cover_Image'][0].url : null;
     const tiktokLink = fields.Link;
-    const aiCharacterUrl = fields['AI Character'] ? fields['AI Character'][0].url : null;
+    const aiCharacterUrl = fields['AI_Character'] ? fields['AI_Character'][0].url : null;
 
     if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video and thumbnail from Apify');
@@ -90,11 +90,11 @@ async function handleGenerate(recordId, res) {
 
     // Update Source Video and Cover Image
     await base(MAIN_TABLE_NAME).update(recordId, {
-      'Source Video': [{ url: sourceVideoUrl }],
-      'Cover Image': coverImageUrl ? [{ url: coverImageUrl }] : []
+      'Source_Video': [{ url: sourceVideoUrl }],
+      'Cover_Image': coverImageUrl ? [{ url: coverImageUrl }] : []
     });
 
-    // Use AI Character if available, fallback to coverImageUrl
+    // Fallback to coverImageUrl if aiCharacterUrl is missing
     const faceImageUrl = aiCharacterUrl || coverImageUrl;
     if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
@@ -123,7 +123,7 @@ async function handleGenerate(recordId, res) {
     if (generatedImages.length === 0) throw new Error('No generated images from Seedream');
 
     // Update Generated Images
-    await base(MAIN_TABLE_NAME).update(recordId, { 'Generated Images': generatedImages });
+    await base(MAIN_TABLE_NAME).update(recordId, { 'Generated_Images': generatedImages });
 
     // Animate/face swap with Wan 2.2 Animate on Wavespeed
     console.log('Performing animation with Wan 2.2 Animate on Wavespeed');
