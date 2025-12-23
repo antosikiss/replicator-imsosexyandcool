@@ -81,17 +81,22 @@ async function handleGenerate(recordId, res) {
       console.log('Apify response:', JSON.stringify(apifyJson));
       if (apifyJson.length === 0) throw new Error('Empty Apify response');
       const post = apifyJson[0];
-      sourceVideoUrl = post.playAddr || post.videoMeta?.playAddr || post.downloadAddr || post.webVideoUrl || post.videoUrl;
-      coverImageUrl = post.cover || post.videoMeta?.cover || post.originCover || post.dynamicCover;
+      sourceVideoUrl = post.videoUrl || post.playAddr || post.videoMeta?.playAddr || post.downloadAddr || post.webVideoUrl;
+      coverImageUrl = post.covers?.default || post.cover || post.videoMeta?.cover || post.originCover || post.dynamicCover;
       if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
 
-      // Force .mp4 for Airtable preview
-      if (!sourceVideoUrl.endsWith('.mp4')) sourceVideoUrl += '.mp4';
+      // Force .mp4 extension for Airtable video preview
+      if (!sourceVideoUrl.endsWith('.mp4')) {
+        sourceVideoUrl += '.mp4';
+      }
+      if (!coverImageUrl.endsWith('.jpg') && !coverImageUrl.endsWith('.png')) {
+        coverImageUrl += '.jpg';
+      }
     }
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Update Source Video and Cover Image
+    // Update Source_Video and Cover_Image
     await base(MAIN_TABLE_NAME).update(recordId, {
       'Source_Video': [{ url: sourceVideoUrl }],
       'Cover_Image': coverImageUrl ? [{ url: coverImageUrl }] : []
@@ -125,7 +130,7 @@ async function handleGenerate(recordId, res) {
     const generatedImages = (seedreamJson.output || []).map(url => ({ url }));
     if (generatedImages.length === 0) throw new Error('No generated images from Seedream');
 
-    // Update Generated Images
+    // Update Generated_Images
     await base(MAIN_TABLE_NAME).update(recordId, { 'Generated_Images': generatedImages });
 
     // Animate/face swap with Wan 2.2 Animate on Wavespeed
@@ -152,7 +157,7 @@ async function handleGenerate(recordId, res) {
 
     // Success update
     await base(MAIN_TABLE_NAME).update(recordId, {
-      'Output Video': [{ url: outputVideoUrl }],
+      'Output_Video': [{ url: outputVideoUrl }],
       Status: 'Complete',
       Generate: false
     });
