@@ -1,6 +1,7 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const Airtable = require('airtable');
+const cheerio = require('cheerio');
 const app = express();
 app.use(express.json());
 
@@ -41,7 +42,6 @@ async function handleGenerate(recordId, res) {
   const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
   const AIRTABLE_BASE_ID = 'app5JstpSmtghcbMA';
   const WAVESPEED_API_KEY = process.env.WAVESPEED_API_KEY;
-  const APIFY_API_KEY = process.env.APIFY_API_KEY;
   const MAIN_TABLE_NAME = 'Generation';
 
   if (!AIRTABLE_API_KEY || !WAVESPEED_API_KEY) return res.status(500).send('Missing required env vars');
@@ -62,33 +62,41 @@ async function handleGenerate(recordId, res) {
     const tiktokLink = fields.Link;
     const aiCharacterUrl = fields['AI Character'] ? fields['AI Character'][0].url : null;
 
-    if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
-      console.log('Downloading video and thumbnail from Apify');
-      const apifyData = {
-        urls: [tiktokLink]
+    if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com')) {
+      console.log('Downloading video and thumbnail from ssstik.io');
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://ssstik.io/en'
       };
-      const apifyUrl = `https://api.apify.com/v2/acts/S5h7zRLfKFEr8pdj7/run-sync-get-dataset-items?token=${APIFY_API_KEY}`;
-      const apifyRes = await fetch(apifyUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(apifyData)
-      });
-      if (!apifyRes.ok) {
-        const errText = await apifyRes.text();
-        throw new Error(`Apify error: ${apifyRes.statusText} - ${errText}`);
-      }
-      const apifyJson = await apifyRes.json();
-      console.log('Apify response:', JSON.stringify(apifyJson));
-      if (apifyJson.length === 0) throw new Error('Empty Apify response');
-      const post = apifyJson[0];
-      sourceVideoUrl = post.playAddr || post.videoMeta?.playAddr || post.downloadAddr || post.webVideoUrl || post.videoUrl;
-      coverImageUrl = post.cover || post.videoMeta?.cover || post.originCover || post.dynamicCover;
-      if (!sourceVideoUrl) throw new Error('No video URL found in Apify response');
 
-      // Force .mp4 extension for Airtable video preview
-      if (!sourceVideoUrl.endsWith('.mp4')) {
-        sourceVideoUrl += '.mp4';
-      }
+      // Get tt token from main page
+      const pageRes = await fetch('https://ssstik.io/en', { headers });
+      const pageText = await pageRes.text();
+      const $ = cheerio.load(pageText);
+      const tt = $('input[name="tt"]').val();
+      console.log('TT token:', tt);
+
+      const data = new URLSearchParams();
+      data.append('id', tiktokLink);
+      data.append('locale', 'en');
+      data.append('tt', tt || '0');
+
+      const res2 = await fetch('https://ssstik.io/abc.php?rand=' + Math.random(), {
+        method: 'POST',
+        headers,
+        body: data
+      });
+      const text2 = await res2.text();
+      console.log('ssstik response:', text2);
+
+      const $2 = cheerio.load(text2);
+      sourceVideoUrl = $2('a.pure-button').attr('href'); // No-watermark link
+      coverImageUrl = $2('img.result_overlay').attr('src') || $2('img').attr('src'); // Thumbnail
+
+      if (!sourceVideoUrl || sourceVideoUrl.includes('undefined')) throw new Error('No video URL found in ssstik response');
+      // Ensure .mp4 for Airtable preview
+      if (!sourceVideoUrl.endsWith('.mp4')) sourceVideoUrl += '.mp4';
     }
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
