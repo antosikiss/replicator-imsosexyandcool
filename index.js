@@ -94,7 +94,7 @@ async function handleGenerate(recordId, res) {
       'Cover Image': coverImageUrl ? [{ url: coverImageUrl }] : []
     });
 
-    // Fallback to coverImageUrl if aiCharacterUrl is missing
+    // Use AI Character if available, fallback to coverImageUrl
     const faceImageUrl = aiCharacterUrl || coverImageUrl;
     if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
