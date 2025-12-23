@@ -34,24 +34,6 @@ app.post('/generate', async (req, res) => {
   }
 });
 
-async function pollWavespeedResult(requestId, maxAttempts = 60, interval = 5000) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(resolve => setTimeout(resolve, interval));
-    const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${requestId}/result`, {
-      headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
-    });
-    if (!pollRes.ok) continue;
-    const pollJson = await pollRes.json();
-    if (pollJson.status === 'completed' || pollJson.output) {
-      return pollJson;
-    }
-    if (pollJson.status === 'failed') {
-      throw new Error('Wavespeed job failed');
-    }
-  }
-  throw new Error('Wavespeed timeout');
-}
-
 async function handleGenerate(recordId, res) {
   console.log('handleGenerate called with recordId:', recordId);
   if (!recordId) return res.status(400).send('Missing recordId');
@@ -66,6 +48,24 @@ async function handleGenerate(recordId, res) {
 
   const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 
+  async function pollWavespeedResult(requestId, maxAttempts = 60, interval = 5000) {
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(resolve => setTimeout(resolve, interval));
+      const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${requestId}/result`, {
+        headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
+      });
+      if (!pollRes.ok) continue;
+      const pollJson = await pollRes.json();
+      if (pollJson.status === 'completed' || pollJson.output) {
+        return pollJson;
+      }
+      if (pollJson.status === 'failed') {
+        throw new Error('Wavespeed job failed');
+      }
+    }
+    throw new Error('Wavespeed timeout');
+  }
+
   try {
     console.log('Fetching record:', recordId);
     const record = await base(MAIN_TABLE_NAME).find(recordId);
@@ -75,10 +75,10 @@ async function handleGenerate(recordId, res) {
 
     await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Generating' });
 
-    let sourceVideoUrl = fields['Source_Video'] ? fields['Source_Video'][0].url : null;
-    let coverImageUrl = fields['Cover_Image'] ? fields['Cover_Image'][0].url : null;
+    let sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
+    let coverImageUrl = fields['Cover Image'] ? fields['Cover Image'][0].url : null;
     const tiktokLink = fields.Link;
-    const aiCharacterUrl = fields['AI_Character'] ? fields['AI_Character'][0].url : null;
+    const aiCharacterUrl = fields['AI Character'] ? fields['AI Character'][0].url : null;
 
     if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video and thumbnail from Apify');
@@ -109,15 +109,15 @@ async function handleGenerate(recordId, res) {
 
     if (!sourceVideoUrl) throw new Error('Missing Source Video');
 
-    // Update Source_Video and Cover_Image
+    // Update Source Video and Cover Image
     await base(MAIN_TABLE_NAME).update(recordId, {
-      'Source_Video': [{ url: sourceVideoUrl }],
-      'Cover_Image': coverImageUrl ? [{ url: coverImageUrl }] : []
+      'Source Video': [{ url: sourceVideoUrl }],
+      'Cover Image': coverImageUrl ? [{ url: coverImageUrl }] : []
     });
 
-    // Fallback to coverImageUrl if aiCharacterUrl is missing
+    // Use AI Character if available, fallback to coverImageUrl
     const faceImageUrl = aiCharacterUrl || coverImageUrl;
-    if (!faceImageUrl) throw new Error('Missing AI_Character or Cover_Image for face swap');
+    if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
     // Generate faces with Seedream v4.5 on Wavespeed (async)
     console.log('Generating images with Seedream v4.5 on Wavespeed');
@@ -144,8 +144,8 @@ async function handleGenerate(recordId, res) {
     const generatedImages = (seedreamResult.output || []).map(url => ({ url }));
     if (generatedImages.length === 0) throw new Error('No generated images from Seedream');
 
-    // Update Generated_Images
-    await base(MAIN_TABLE_NAME).update(recordId, { 'Generated_Images': generatedImages });
+    // Update Generated Images
+    await base(MAIN_TABLE_NAME).update(recordId, { 'Generated Images': generatedImages });
 
     // Animate/face swap with Wan 2.2 Animate on Wavespeed (async)
     console.log('Performing animation with Wan 2.2 Animate on Wavespeed');
@@ -173,7 +173,7 @@ async function handleGenerate(recordId, res) {
 
     // Success update
     await base(MAIN_TABLE_NAME).update(recordId, {
-      'Output_Video': [{ url: outputVideoUrl }],
+      'Output Video': [{ url: outputVideoUrl }],
       Status: 'Complete',
       Generate: false
     });
@@ -191,24 +191,6 @@ async function handleGenerate(recordId, res) {
     }
     res.status(500).send(error.message || 'Unknown error');
   }
-}
-
-async function pollWavespeedResult(requestId, maxAttempts = 60, interval = 5000) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(resolve => setTimeout(resolve, interval));
-    const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${requestId}/result`, {
-      headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
-    });
-    if (!pollRes.ok) continue;
-    const pollJson = await pollRes.json();
-    if (pollJson.status === 'completed' || pollJson.output) {
-      return pollJson;
-    }
-    if (pollJson.status === 'failed') {
-      throw new Error('Wavespeed job failed');
-    }
-  }
-  throw new Error('Wavespeed timeout');
 }
 
 const PORT = process.env.PORT || 3000;
