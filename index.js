@@ -57,10 +57,10 @@ async function handleGenerate(recordId, res) {
 
     await base(MAIN_TABLE_NAME).update(recordId, { Status: 'Generating' });
 
-    let sourceVideoUrl = fields['Source_Video'] ? fields['Source_Video'][0].url : null;
-    let coverImageUrl = fields['Cover_Image'] ? fields['Cover_Image'][0].url : null;
+    let sourceVideoUrl = fields['Source Video'] ? fields['Source Video'][0].url : null;
+    let coverImageUrl = fields['Cover Image'] ? fields['Cover Image'][0].url : null;
     const tiktokLink = fields.Link;
-    const aiCharacterUrl = fields['AI_Character'] ? fields['AI_Character'][0].url : null;
+    const aiCharacterUrl = fields['AI Character'] ? fields['AI Character'][0].url : null;
 
     if ((!sourceVideoUrl || !coverImageUrl) && tiktokLink && tiktokLink.includes('tiktok.com') && APIFY_API_KEY) {
       console.log('Downloading video and thumbnail from Apify');
@@ -90,11 +90,11 @@ async function handleGenerate(recordId, res) {
 
     // Update Source Video and Cover Image
     await base(MAIN_TABLE_NAME).update(recordId, {
-      'Source_Video': [{ url: sourceVideoUrl }],
-      'Cover_Image': coverImageUrl ? [{ url: coverImageUrl }] : []
+      'Source Video': [{ url: sourceVideoUrl }],
+      'Cover Image': coverImageUrl ? [{ url: coverImageUrl }] : []
     });
 
-    // Fallback to coverImageUrl if aiCharacterUrl is missing
+    // Use AI Character if available, fallback to coverImageUrl
     const faceImageUrl = aiCharacterUrl || coverImageUrl;
     if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
@@ -119,11 +119,12 @@ async function handleGenerate(recordId, res) {
     });
     if (!seedreamRes.ok) throw new Error(`Seedream error: ${seedreamRes.statusText}`);
     const seedreamJson = await seedreamRes.json();
-    const generatedImages = seedreamJson.output.map(url => ({ url }));
+    console.log('Seedream response:', JSON.stringify(seedreamJson));
+    const generatedImages = (seedreamJson.output || seedreamJson.images || []).map(url => ({ url }));
     if (generatedImages.length === 0) throw new Error('No generated images from Seedream');
 
     // Update Generated Images
-    await base(MAIN_TABLE_NAME).update(recordId, { 'Generated_Images': generatedImages });
+    await base(MAIN_TABLE_NAME).update(recordId, { 'Generated Images': generatedImages });
 
     // Animate/face swap with Wan 2.2 Animate on Wavespeed
     console.log('Performing animation with Wan 2.2 Animate on Wavespeed');
@@ -145,7 +146,9 @@ async function handleGenerate(recordId, res) {
     });
     if (!wanRes.ok) throw new Error(`Wan Animate error: ${wanRes.statusText}`);
     const wanJson = await wanRes.json();
-    const outputVideoUrl = wanJson.output_video_url;
+    console.log('Wan response:', JSON.stringify(wanJson));
+    const outputVideoUrl = wanJson.output_video_url || wanJson.output || wanJson.video_url;
+    if (!outputVideoUrl) throw new Error('No output video from Wan Animate');
 
     // Success update
     await base(MAIN_TABLE_NAME).update(recordId, {
