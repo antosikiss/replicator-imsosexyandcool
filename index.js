@@ -34,6 +34,29 @@ app.post('/generate', async (req, res) => {
   }
 });
 
+// Polling function for Wavespeed async jobs
+async function pollWavespeedResult(requestId, maxAttempts = 60, interval = 5000) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(resolve => setTimeout(resolve, interval));
+    const pollRes = await fetch(`https://api.wavespeed.ai/api/v3/predictions/${requestId}/result`, {
+      headers: { 'Authorization': `Bearer ${WAVESPEED_API_KEY}` }
+    });
+    if (!pollRes.ok) {
+      console.log('Polling error:', pollRes.statusText);
+      continue;
+    }
+    const pollJson = await pollRes.json();
+    console.log('Poll response:', JSON.stringify(pollJson));
+    if (pollJson.status === 'completed' || pollJson.output) {
+      return pollJson;
+    }
+    if (pollJson.status === 'failed') {
+      throw new Error('Wavespeed job failed: ' + pollJson.error);
+    }
+  }
+  throw new Error('Wavespeed job timeout after ' + maxAttempts + ' attempts');
+}
+
 async function handleGenerate(recordId, res) {
   console.log('handleGenerate called with recordId:', recordId);
   if (!recordId) return res.status(400).send('Missing recordId');
@@ -99,7 +122,7 @@ async function handleGenerate(recordId, res) {
     const faceImageUrl = aiCharacterUrl || coverImageUrl;
     if (!faceImageUrl) throw new Error('Missing AI Character or Cover Image for face swap');
 
-    // Generate faces with Seedream v4.5 on Wavespeed
+    // Generate faces with Seedream v4.5 on Wavespeed (async polling)
     console.log('Generating images with Seedream v4.5 on Wavespeed');
     const seedreamUuid = 'bytedance/seedream-v4.5/edit';
     const seedreamUrl = `https://api.wavespeed.ai/api/v3/${seedreamUuid}`;
@@ -107,8 +130,7 @@ async function handleGenerate(recordId, res) {
       images: [faceImageUrl],
       prompt: 'high quality portrait, detailed face, realistic skin, sharp eyes',
       width: 1728,
-      height: 2304,
-      wait: true
+      height: 2304
     };
     const seedreamRes = await fetch(seedreamUrl, {
       method: 'POST',
@@ -120,13 +142,15 @@ async function handleGenerate(recordId, res) {
     });
     if (!seedreamRes.ok) throw new Error(`Seedream error: ${seedreamRes.statusText}`);
     const seedreamJson = await seedreamRes.json();
-    const generatedImages = (seedreamJson.output || []).map(url => ({ url }));
+    const seedreamRequestId = seedreamJson.id;
+    const seedreamResult = await pollWavespeedResult(seedreamRequestId);
+    const generatedImages = (seedreamResult.output || []).map(url => ({ url }));
     if (generatedImages.length === 0) throw new Error('No generated images from Seedream');
 
     // Update Generated Images
     await base(MAIN_TABLE_NAME).update(recordId, { 'Generated Images': generatedImages });
 
-    // Animate/face swap with Wan 2.2 Animate on Wavespeed
+    // Animate/face swap with Wan 2.2 Animate on Wavespeed (async polling)
     console.log('Performing animation with Wan 2.2 Animate on Wavespeed');
     const wanUuid = 'wavespeed-ai/wan-2.2/animate';
     const wanUrl = `https://api.wavespeed.ai/api/v3/${wanUuid}`;
@@ -146,7 +170,9 @@ async function handleGenerate(recordId, res) {
     });
     if (!wanRes.ok) throw new Error(`Wan Animate error: ${wanRes.statusText}`);
     const wanJson = await wanRes.json();
-    const outputVideoUrl = wanJson.output_video_url;
+    const wanRequestId = wanJson.id;
+    const wanResult = await pollWavespeedResult(wanRequestId);
+    const outputVideoUrl = wanResult.output_video_url;
 
     // Success update
     await base(MAIN_TABLE_NAME).update(recordId, {
